@@ -19,21 +19,22 @@ const getMockComment = (context: { score: number, misses: number, lang: string }
 };
 
 interface SnarkyDogProps {
-  isVisible: boolean;
-  context: {
-    score: number;
-    misses: number;
-    round: number;
-  };
-  onDismiss: () => void;
+  misses: number;
+  score: number;
+  onRoast: (message: string) => void;
 }
 
-export default function SnarkyDog({ isVisible, context, onDismiss }: SnarkyDogProps) {
+export default function SnarkyDog({ misses, score, onRoast }: SnarkyDogProps) {
   const [message, setMessage] = useState<string>('');
   const [lang, setLang] = useState<string>('en');
+  const [isVisible, setIsVisible] = useState(false);
+  const lastMissesRef = useState(0);
 
   useEffect(() => {
-    if (isVisible) {
+    // Show dog when misses increase
+    if (misses > lastMissesRef[0] && Math.random() > 0.3) {
+      setIsVisible(true);
+      
       // Pick random language
       const langs = ['en', 'hi', 'hr', 'rj'];
       const randomLang = langs[Math.floor(Math.random() * langs.length)];
@@ -48,18 +49,21 @@ export default function SnarkyDog({ isVisible, context, onDismiss }: SnarkyDogPr
       };
 
       // Try Gemini first, then fallback
-      generateDogRoast({ ...context, lang: randomLang })
+      generateDogRoast({ score, misses, round: misses + score, lang: randomLang })
         .then(text => {
-            const finalMessage = text || getMockComment({ ...context, lang: randomLang });
+            const finalMessage = text || getMockComment({ score, misses, lang: randomLang });
             setMessage(finalMessage);
+            onRoast(finalMessage);
             speak(finalMessage, randomLang);
         })
         .finally(() => {
             // Auto dismiss after 4s
-            setTimeout(onDismiss, 4000);
+            setTimeout(() => setIsVisible(false), 4000);
         });
     }
-  }, [isVisible, context, onDismiss]);
+    
+    lastMissesRef[0] = misses;
+  }, [misses, score, onRoast, lastMissesRef]);
 
   return (
     <AnimatePresence>

@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import confetti from 'canvas-confetti';
 
 interface Duck {
@@ -23,9 +23,11 @@ interface GameCanvasProps {
   onDuckHit: (id: number) => void;
   onDuckEscape: () => void;
   triggerShoot: boolean;
+  difficulty: 'easy' | 'medium' | 'hard';
+  speedMultiplier: number;
 }
 
-export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuckEscape, triggerShoot }: GameCanvasProps) {
+export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuckEscape, triggerShoot, difficulty, speedMultiplier }: GameCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const ducksRef = useRef<Duck[]>([]);
   const lastTimeRef = useRef<number>(0);
@@ -38,20 +40,34 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
   const duckSpriteRef = useRef<HTMLImageElement | null>(null);
   const crosshairSpriteRef = useRef<HTMLImageElement | null>(null);
   const backgroundRef = useRef<HTMLImageElement | null>(null);
+  
+  // Cache for processed duck sprites (performance optimization)
+  const processedSpriteCache = useRef<Map<string, HTMLCanvasElement>>(new Map());
 
-  // Load images
+  // Load images with error handling and cleanup
   useEffect(() => {
+    let mounted = true;
+    
     const duckImg = new Image();
     duckImg.src = '/duck-sprite.png';
-    duckImg.onload = () => { duckSpriteRef.current = duckImg; };
+    duckImg.onload = () => { if (mounted) duckSpriteRef.current = duckImg; };
+    duckImg.onerror = () => console.error('Failed to load duck sprite');
 
     const crosshairImg = new Image();
     crosshairImg.src = '/crosshair.png';
-    crosshairImg.onload = () => { crosshairSpriteRef.current = crosshairImg; };
+    crosshairImg.onload = () => { if (mounted) crosshairSpriteRef.current = crosshairImg; };
+    crosshairImg.onerror = () => console.error('Failed to load crosshair sprite');
 
     const bgImg = new Image();
     bgImg.src = '/background.png';
-    bgImg.onload = () => { backgroundRef.current = bgImg; };
+    bgImg.onload = () => { if (mounted) backgroundRef.current = bgImg; };
+    bgImg.onerror = () => console.error('Failed to load background');
+    
+    return () => {
+      mounted = false;
+      // Clear sprite cache on unmount
+      processedSpriteCache.current.clear();
+    };
   }, []);
 
   // Initialize Ducks
@@ -63,12 +79,13 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
 
   const spawnDuck = () => {
     const side = Math.random() > 0.5 ? 'left' : 'right';
+    const baseSpeed = 0.002 + round * 0.0003;
     ducksRef.current.push({
       id: Date.now(),
       x: side === 'left' ? 0.1 : 0.9,
       y: 0.6 + Math.random() * 0.2,
-      vx: (side === 'left' ? 1 : -1) * (0.002 + round * 0.0003),
-      vy: -0.003 - Math.random() * 0.003,
+      vx: (side === 'left' ? 1 : -1) * baseSpeed * speedMultiplier,
+      vy: (-0.003 - Math.random() * 0.003) * speedMultiplier,
       state: 'flying',
       type: 'green',
       animFrame: 0,
@@ -98,13 +115,16 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [triggerShoot]);
 
-  const handleShoot = () => {
+  // Memoize shoot handler to prevent recreations
+  const handleShoot = useCallback(() => {
     const hitRadius = 0.08;
     const currentAimX = smoothAimRef.current.x;
     const currentAimY = smoothAimRef.current.y;
     
+    let hitDetected = false;
+    
     ducksRef.current.forEach(duck => {
-      if (duck.state !== 'flying') return;
+      if (duck.state !== 'flying' || hitDetected) return;
       
       const dx = duck.x - currentAimX;
       const dy = duck.y - currentAimY;
@@ -115,12 +135,16 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
         duck.vy = 0.015;
         duck.vx = 0;
         onDuckHit(score + 100);
+        hitDetected = true;
         
-        confetti({
-          particleCount: 30,
-          spread: 50,
-          origin: { x: duck.x, y: duck.y },
-          colors: ['#ff0000', '#ffffff', '#ffaa00']
+        // Use requestAnimationFrame for confetti to avoid blocking
+        requestAnimationFrame(() => {
+          confetti({
+            particleCount: 30,
+            spread: 50,
+            origin: { x: duck.x, y: duck.y },
+            colors: ['#ff0000', '#ffffff', '#ffaa00']
+          });
         });
       }
     });
@@ -131,7 +155,7 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
       ctx.fillStyle = 'rgba(255, 255, 255, 0.5)';
       ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
     }
-  };
+  }, [score, onDuckHit]);
 
   // Game Loop
   useEffect(() => {
@@ -146,25 +170,35 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
-      // Smooth cursor interpolation (lerp)
-      const lerpFactor = 0.15;
+      // Smooth cursor interpolation (lerp) - increased for smoother movement
+      const lerpFactor = 0.25;
       smoothAimRef.current.x += (aimX - smoothAimRef.current.x) * lerpFactor;
       smoothAimRef.current.y += (aimY - smoothAimRef.current.y) * lerpFactor;
 
       // Clear
       ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-      // Draw Background
+      // Draw Modern Background
       if (backgroundRef.current) {
         ctx.drawImage(backgroundRef.current, 0, 0, canvas.width, canvas.height);
       } else {
-        // Fallback gradient
+        // Modern gradient background
         const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-        gradient.addColorStop(0, '#87CEEB');
-        gradient.addColorStop(0.7, '#87CEEB');
-        gradient.addColorStop(1, '#228B22');
+        gradient.addColorStop(0, '#1e1b4b'); // deep purple
+        gradient.addColorStop(0.5, '#7c3aed'); // vibrant purple
+        gradient.addColorStop(1, '#0f172a'); // dark slate
         ctx.fillStyle = gradient;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Add floating particles effect
+        ctx.fillStyle = 'rgba(56, 189, 248, 0.3)';
+        for (let i = 0; i < 50; i++) {
+          const x = (Math.sin(time * 0.001 + i) * 0.5 + 0.5) * canvas.width;
+          const y = (Math.cos(time * 0.0007 + i) * 0.5 + 0.5) * canvas.height;
+          ctx.beginPath();
+          ctx.arc(x, y, 2, 0, Math.PI * 2);
+          ctx.fill();
+        }
       }
 
       // Draw Ducks
@@ -204,10 +238,10 @@ export default function GameCanvas({ score, round, aimX, aimY, onDuckHit, onDuck
           }
         }
 
-        // Render Duck Sprite
+        // Render Duck Sprite - increased size for better visibility
         const dx = duck.x * canvas.width;
         const dy = duck.y * canvas.height;
-        const duckSize = 80;
+        const duckSize = 120;
 
         if (duckSpriteRef.current) {
           // Sprite sheet has 4 frames in 2x2 grid
